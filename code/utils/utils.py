@@ -15,6 +15,7 @@ from sklearn.metrics import fbeta_score, roc_auc_score, roc_curve, roc_curve, au
 from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
 import warnings
+from scipy.io import loadmat
 
 # EVALUATION STUFF
 def generate_results(idxs, y_true, y_pred, thresholds):
@@ -111,24 +112,130 @@ def apply_thresholds(preds, thresholds):
 	tmp = np.array(tmp)
 	return tmp
 
-# DATA PROCESSING STUFF
 
+# Resample signals to reduce Hz (sample rate, frequency rate)
+def Resample(input_signal, src_fs, tar_fs):
+    '''
+    :param input_signal: input signal
+    :param src_fs: Input signal sample rate (frequency sample)
+    :param tar_fs: Output signal sample rate (frequency sample)
+    :return: Output signal
+    '''
+    if src_fs != tar_fs:
+        dtype = input_signal.dtype
+        audio_len = input_signal.shape[1]
+        audio_time_max = 1.0 * (audio_len) / src_fs
+        src_time = 1.0 * np.linspace(0, audio_len, audio_len) / src_fs
+        tar_time = 1.0 * np.linspace(0, int(audio_time_max * tar_fs), int(audio_time_max * tar_fs)) / tar_fs
+        for i in range(input_signal.shape[0]):
+            if i == 0:
+                output_signal = np.interp(tar_time, src_time, input_signal[i, :]).astype(dtype)
+                output_signal = output_signal.reshape(1, len(output_signal))
+            else:
+                tmp = np.interp(tar_time, src_time, input_signal[i, :]).astype(dtype)
+                tmp = tmp.reshape(1, len(tmp))
+                output_signal = np.vstack((output_signal, tmp))
+    else:
+        output_signal = input_signal
+    return output_signal
+
+
+# Load the data and returns recordings and header
+def load_data(header_file):
+    with open(header_file, 'r') as f:
+        header = f.readlines()
+    mat_file = header_file.replace('.hea', '.mat')
+    x = loadmat(mat_file)
+    recording = np.asarray(x['val'], dtype=np.float64)
+    return recording, header
+
+
+# Find unique classes.
+def get_classes(input_directory, filenames):
+    classes = set()
+    for filename in tqdm(filenames, leave = False, desc="Getting classes"):
+        with open(filename, 'r') as f:
+            for l in f:
+                if l.startswith('#Dx'):
+                    tmp = l.split(': ')[1].split(',')
+                    for c in tmp:
+                        classes.add(c.strip())
+    return sorted(classes)
+
+
+# DATA PROCESSING
 def load_dataset(path, sampling_rate, release=False):
-    if path.split('/')[-2] == 'ptbxl':
-        # load and convert annotation data
-        Y = pd.read_csv(path+'ptbxl_database.csv', index_col='ecg_id')
-        Y.scp_codes = Y.scp_codes.apply(lambda x: ast.literal_eval(x))
 
-        # Load raw signal data
-        X = load_raw_data_ptbxl(Y, sampling_rate, path)
+    all_directories = [
+        "PTB-XL/WFDB/PART01",
+        "PTB-XL/WFDB/PART02",
+        "PTB-XL/WFDB/PART03",
+        "PTB-XL/WFDB/PART04",
+        "PTB-XL/WFDB/PART05",
+        "Georgia/WFDB/PART01",
+        "Georgia/WFDB/PART02",
+        "Georgia/WFDB/PART03",
+        "INCART/WFDB",
+        "PTB/WFDB",
+        "CPSC/Training_WFDB",
+        "CPSC_2/Training_2"
+    ]
 
-    elif path.split('/')[-2] == 'ICBEB':
-        # load and convert annotation data
-        Y = pd.read_csv(path+'icbeb_database.csv', index_col='ecg_id')
-        Y.scp_codes = Y.scp_codes.apply(lambda x: ast.literal_eval(x))
+    for i in tqdm(range(len(all_directories)), desc="Loop across databases"):
 
-        # Load raw signal data
-        X = load_raw_data_icbeb(Y, sampling_rate, path)
+        # Define current directory to retrieve data
+        input_directory = path + "/" + all_directories[i]
+
+        # Retrieve headers
+        header_files = []
+        for f in tqdm(os.listdir(input_directory), leave=False, desc="Retrieving headers"):
+            g = os.path.join(input_directory, f)
+            if not f.lower().startswith('.') and f.lower().endswith('hea') and os.path.isfile(g):
+                header_files.append(g)
+
+        # Retrieve classes
+        classes = get_classes(input_directory, header_files)
+        num_classes = len(classes)
+        num_files = len(header_files)
+        recordings = list()
+        headers = list()
+        ids = list()
+        datasets = list()
+
+        # Read recordings and headers
+        for i in tqdm(range(num_files), leave=False, desc="Retrieving recordings and headers"):
+            recording, header = load_data(header_files[i])
+
+            tmp_hea = header[0].split(' ')
+            #ptID = tmp_hea[0]
+            num_leads = int(tmp_hea[1])
+            sample_Fs = int(tmp_hea[2])
+            #gain_lead = np.zeros(num_leads)
+
+            # Resample recording
+            recording = Resample(recording, src_fs=sample_Fs, tar_fs=257)
+
+            recordings.append(recording)
+            headers.append(header)
+            ids.append(str(f))
+            datasets.append(input_directory.split('/')[0])
+
+
+        # Load labels
+        labels = list()
+        for i in tqdm(range(num_files), leave=False, desc="Calculating features"):
+            header = headers[i]
+            for l in header:
+                if l.startswith('#Dx:'):
+                    labels_act = np.zeros(num_classes)
+                    arrs = l.strip().split(' ')
+                    for arr in arrs[1].split(','):
+                        class_index = classes.index(arr.rstrip())  # Only use first positive index
+                        labels_act[class_index] = 1
+            labels.append(labels_act)
+
+    X = [recordings, ids, datasets]
+    Y = labels
 
     return X, Y
 
