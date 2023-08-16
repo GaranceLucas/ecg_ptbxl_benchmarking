@@ -207,10 +207,7 @@ def load_dataset(path, sampling_rate, release=False):
             recording, header = load_data(header_files[i])
 
             tmp_hea = header[0].split(' ')
-            #ptID = tmp_hea[0]
-            num_leads = int(tmp_hea[1])
             sample_Fs = int(tmp_hea[2])
-            #gain_lead = np.zeros(num_leads)
 
             # Resample recording
             recording = Resample(recording, src_fs=sample_Fs, tar_fs=257)
@@ -236,6 +233,8 @@ def load_dataset(path, sampling_rate, release=False):
 
     X = [recordings, ids, datasets]
     Y = labels
+    np.save('X.npy', X)
+    np.save('Y.npy', Y)
 
     return X, Y
 
